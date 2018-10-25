@@ -33,15 +33,40 @@ def create_hde(encoder, input_size):
     return hde
 
 
+def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matrix, norms): 
+    
+    def layer(x, n_components=n_components, means=means, gs_matrix=gs_matrix, norms=norms):
+        x -= means
+        xs = []
+        for i in range(n_components):
+            xi = x[:,i]
+            for j in range(i):
+                xi -= gs_matrix[i, j]*xs[j]
+            xs.append(xi)
+
+        xo = K.stack(xs, axis=1)
+
+        xo /= norms
+        return xo
+    
+    inp = layers.Input(shape=(input_size,))
+    z = encoder(inp)
+    z_orth = layers.Lambda(layer)(z)
+    orth_encoder = Model(inp, z_orth)
+
+    return orth_encoder
+
+
 class HDE(BaseEstimator, TransformerMixin):
 
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, hidden_layer_depth=2, hidden_size=100, 
                  activation='tanh', batch_size=100, verbose=True):
 
-        self.encoder = create_encoder(input_size, n_components, hidden_layer_depth,
+        self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
                                       hidden_size, activation)
-        self.hde = create_hde(self.encoder, input_size)
+        self.encoder = self._encoder
+        self.hde = create_hde(self._encoder, input_size)
 
         self.input_size = input_size
         self.n_components = n_components
@@ -88,12 +113,41 @@ class HDE(BaseEstimator, TransformerMixin):
         return [x_t0, x_tt]
 
 
+    def _process_orthogonal_components(self, data):
+        self.empirical_means = np.mean(data, axis=0)
+        data -= self.empirical_means
+
+        self.scaling_matrix = np.ones((self.n_components, self.n_components))
+        for i in range(self.n_components):
+            for j in range(i):
+                gs_scale = np.mean(data[:,i]*data[:,j], axis=0)/np.mean(data[:,j]*data[:,j], axis=0)
+                data[:,i] -= gs_scale*data[:,j]
+                self.scaling_matrix[i,j] = gs_scale
+                self.scaling_matrix[j,i] = gs_scale
+
+        self.norm_factors = np.sqrt(np.mean(data*data, axis=0))
+        return data
+
+
     def fit(self, X, y=None):
         train_data = self._create_dataset(X)
 
         self.hde.compile(optimizer=self.optimizer, loss=self._loss)
         self.hde.fit(train_data, train_data[0], batch_size=self.batch_size, epochs=self.n_epochs)
         
+        # Evaluate data and store empirical means, Gram-Schmidt scaling factors, and autocorrelations.
+        out = self._encoder.predict(X, batch_size=self.batch_size)
+        self._process_orthogonal_components(out)
+
+        self.encoder = create_orthogonal_encoder(
+            self._encoder, 
+            self.input_size, 
+            self.n_components,
+            self.empirical_means,
+            self.scaling_matrix, 
+            self.norm_factors
+        )        
+
         self.is_fitted = True
         return self
 
