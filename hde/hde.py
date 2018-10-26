@@ -1,6 +1,8 @@
 
 import numpy as np 
 
+import analysis 
+
 from keras import backend as K
 from keras.models import Model
 from keras.optimizers import Adam
@@ -78,7 +80,17 @@ class HDE(BaseEstimator, TransformerMixin):
 
         self.optimizer = Adam(lr=self.learning_rate)
 
+        # Cached time-lagged autocorrelation. 
+        self.autocorrelation_ = None
+
         self.is_fitted = False
+
+    @property
+    def timescales_(self):
+        if self.is_fitted:
+            return -self.lag_time/np.log(self.autocorrelation_)
+        
+        raise RuntimeError('Model needs to be fit first.')
 
 
     def _corr(self, x, y):
@@ -86,10 +98,6 @@ class HDE(BaseEstimator, TransformerMixin):
         yc = y - K.mean(y)
         corr = K.mean(xc*yc)/(K.std(x)*K.std(y))
         return corr
-    
-
-    def _gram_schmidt_empirical(self, v, u):
-        return K.mean(u*v, axis=0)/K.mean(u*u, axis=0)*u
 
 
     def _loss(self, z_dummy, z):
@@ -99,7 +107,7 @@ class HDE(BaseEstimator, TransformerMixin):
             zi = z[:,i::self.n_components]
             zi -= K.mean(zi)
             for zj in zs:
-                zi -= self._gram_schmidt_empirical(zi, zj)
+                zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
             
             zs.append(zi)
             loss += 1.0/K.log(self._corr(zi[:,0], zi[:,1]))
@@ -120,7 +128,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.scaling_matrix = np.ones((self.n_components, self.n_components))
         for i in range(self.n_components):
             for j in range(i):
-                gs_scale = np.mean(data[:,i]*data[:,j], axis=0)/np.mean(data[:,j]*data[:,j], axis=0)
+                gs_scale =  analysis.empirical_gram_schmidt(data[:,i], data[:,j])
                 data[:,i] -= gs_scale*data[:,j]
                 self.scaling_matrix[i,j] = gs_scale
                 self.scaling_matrix[j,i] = gs_scale
@@ -135,9 +143,16 @@ class HDE(BaseEstimator, TransformerMixin):
         self.hde.compile(optimizer=self.optimizer, loss=self._loss)
         self.hde.fit(train_data, train_data[0], batch_size=self.batch_size, epochs=self.n_epochs)
         
-        # Evaluate data and store empirical means, Gram-Schmidt scaling factors, and autocorrelations.
+        # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
         out = self._encoder.predict(X, batch_size=self.batch_size)
-        self._process_orthogonal_components(out)
+        out = self._process_orthogonal_components(out)
+
+        # Compute and store autocorrelation.
+        out_t0, out_tt = self._create_dataset(out)
+
+        self.autocorrelation_ = np.array([
+            analysis.empirical_correlation(out_t0[:,i], out_tt[:,i]) 
+            for i in range(self.n_components)])
 
         self.encoder = create_orthogonal_encoder(
             self._encoder, 
@@ -146,7 +161,7 @@ class HDE(BaseEstimator, TransformerMixin):
             self.empirical_means,
             self.scaling_matrix, 
             self.norm_factors
-        )        
+        )  
 
         self.is_fitted = True
         return self
