@@ -143,7 +143,9 @@ class HDE(BaseEstimator, TransformerMixin):
         train_data = self._create_dataset(X)
 
         # Main fitting.
-        self.hde.compile(optimizer=self.optimizer, loss=self._loss)
+        if not self.is_fitted:
+            self.hde.compile(optimizer=self.optimizer, loss=self._loss)
+            
         self.hde.fit(train_data, train_data[0], batch_size=self.batch_size, epochs=self.n_epochs)
         
         # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
