@@ -1,7 +1,7 @@
 
 import numpy as np 
 
-import analysis 
+from . import analysis 
 
 from keras import backend as K
 from keras.models import Model
@@ -14,7 +14,7 @@ __all__ = ['HDE']
 
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
-            hidden_size, activation):
+                   hidden_size, activation):
     encoder_input = layers.Input(shape=(input_size,))
     encoder = layers.Dense(hidden_size, activation=activation)(encoder_input)
     for _ in range(hidden_layer_depth - 1):
@@ -35,9 +35,9 @@ def create_hde(encoder, input_size):
     return hde
 
 
-def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matrix, norms): 
+def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matrix, norms, order): 
     
-    def layer(x, n_components=n_components, means=means, gs_matrix=gs_matrix, norms=norms):
+    def layer(x, n_components=n_components, means=means, gs_matrix=gs_matrix, norms=norms, order=order):
         x -= means
         xs = []
         for i in range(n_components):
@@ -46,6 +46,7 @@ def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matri
                 xi -= gs_matrix[i, j]*xs[j]
             xs.append(xi)
 
+        xs = [xs[i] for i in order]
         xo = K.stack(xs, axis=1)
 
         xo /= norms
@@ -63,7 +64,7 @@ class HDE(BaseEstimator, TransformerMixin):
 
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, hidden_layer_depth=2, hidden_size=100, 
-                 activation='tanh', batch_size=100, verbose=True):
+                 activation='tanh', batch_size=100, presort=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
                                       hidden_size, activation)
@@ -80,8 +81,9 @@ class HDE(BaseEstimator, TransformerMixin):
 
         self.optimizer = Adam(lr=self.learning_rate)
 
-        # Cached time-lagged autocorrelation. 
+        # Cached variables 
         self.autocorrelation_ = None
+        self._sorted_idx = None
 
         self.is_fitted = False
 
@@ -140,6 +142,7 @@ class HDE(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         train_data = self._create_dataset(X)
 
+        # Main fitting.
         self.hde.compile(optimizer=self.optimizer, loss=self._loss)
         self.hde.fit(train_data, train_data[0], batch_size=self.batch_size, epochs=self.n_epochs)
         
@@ -153,6 +156,10 @@ class HDE(BaseEstimator, TransformerMixin):
         self.autocorrelation_ = np.array([
             analysis.empirical_correlation(out_t0[:,i], out_tt[:,i]) 
             for i in range(self.n_components)])
+        
+        # Sort descending.
+        self._sorted_idx = np.argsort(self.autocorrelation_)[::-1]
+        self.autocorrelation_ = self.autocorrelation_[self._sorted_idx]
 
         self.encoder = create_orthogonal_encoder(
             self._encoder, 
@@ -160,8 +167,9 @@ class HDE(BaseEstimator, TransformerMixin):
             self.n_components,
             self.empirical_means,
             self.scaling_matrix, 
-            self.norm_factors
-        )  
+            self.norm_factors,
+            self._sorted_idx
+        )
 
         self.is_fitted = True
         return self
