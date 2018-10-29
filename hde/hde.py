@@ -79,13 +79,13 @@ class HDE(BaseEstimator, TransformerMixin):
         self.batch_size = batch_size
         self.verbose = verbose
 
-        self.optimizer = Adam(lr=self.learning_rate)
-
         # Cached variables 
         self.autocorrelation_ = None
         self._sorted_idx = None
+        self._recompile = False
 
         self.is_fitted = False
+
 
     @property
     def timescales_(self):
@@ -93,6 +93,18 @@ class HDE(BaseEstimator, TransformerMixin):
             return -self.lag_time/np.log(self.autocorrelation_)
         
         raise RuntimeError('Model needs to be fit first.')
+
+
+    @property
+    def learning_rate(self):
+        return self._learning_rate_
+    
+
+    @learning_rate.setter
+    def learning_rate(self, value):
+        self._learning_rate_ = value
+        self.optimizer = Adam(lr=value)
+        self._recompile = True
 
 
     def _corr(self, x, y):
@@ -143,9 +155,9 @@ class HDE(BaseEstimator, TransformerMixin):
         train_data = self._create_dataset(X)
 
         # Main fitting.
-        if not self.is_fitted:
+        if not self.is_fitted or self._recompile:
             self.hde.compile(optimizer=self.optimizer, loss=self._loss)
-            
+
         self.hde.fit(train_data, train_data[0], batch_size=self.batch_size, epochs=self.n_epochs)
         
         # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
