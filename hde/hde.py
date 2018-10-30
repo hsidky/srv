@@ -14,11 +14,13 @@ __all__ = ['HDE']
 
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
-                   hidden_size, activation):
+                   hidden_size, dropout_rate, activation):
     encoder_input = layers.Input(shape=(input_size,))
     encoder = layers.Dense(hidden_size, activation=activation)(encoder_input)
     for _ in range(hidden_layer_depth - 1):
         encoder = layers.Dense(hidden_size, activation=activation)(encoder)
+        if dropout_rate > 0:
+            encoder = layers.Dropout(dropout_rate)(encoder)
     
     encoder = layers.Dense(output_size, activation=activation)(encoder)
     model = Model(encoder_input, encoder)
@@ -63,11 +65,12 @@ def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matri
 class HDE(BaseEstimator, TransformerMixin):
 
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
-                 learning_rate=0.001, hidden_layer_depth=2, hidden_size=100, 
-                 activation='tanh', batch_size=100, presort=False, verbose=True):
+                 learning_rate=0.001, dropout_rate=0, hidden_layer_depth=2, 
+                 hidden_size=100, activation='tanh', batch_size=100, 
+                 presort=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
-                                      hidden_size, activation)
+                                      hidden_size, dropout_rate, activation)
         self.encoder = self._encoder
         self.hde = create_hde(self._encoder, input_size)
 
@@ -76,6 +79,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.lag_time = lag_time
         self.n_epochs = n_epochs
         self.learning_rate = learning_rate
+        self.dropout_rate = dropout_rate
         self.batch_size = batch_size
         self.verbose = verbose
 
