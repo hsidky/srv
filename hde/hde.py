@@ -91,6 +91,30 @@ class HDE(BaseEstimator, TransformerMixin):
         self.is_fitted = False
 
 
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        d.pop('encoder')
+        d.pop('hde')
+        d.pop('optimizer')
+        return d
+
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.learning_rate = self._learning_rate_
+        self.hde = create_hde(self._encoder, self.input_size)
+        if self.is_fitted:
+            self.encoder = create_orthogonal_encoder(
+                            self._encoder, 
+                            self.input_size, 
+                            self.n_components,
+                            self.empirical_means,
+                            self.scaling_matrix, 
+                            self.norm_factors,
+                            self._sorted_idx
+                        )
+
+
     @property
     def timescales_(self):
         if self.is_fitted:
