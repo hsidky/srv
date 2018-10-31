@@ -20,6 +20,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
     encoder_input = layers.Input(shape=(input_size,))
     encoder = layers.Dense(hidden_size, activation=activation)(encoder_input)
     for _ in range(hidden_layer_depth - 1):
+        encoder = layers.BatchNormalization(axis=1)(encoder)
         encoder = layers.Dense(hidden_size, activation=activation)(encoder)
         if dropout_rate > 0:
             encoder = layers.Dropout(dropout_rate)(encoder)
