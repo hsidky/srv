@@ -69,7 +69,7 @@ class HDE(BaseEstimator, TransformerMixin):
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, dropout_rate=0, hidden_layer_depth=2,
                  hidden_size=100, activation='tanh', batch_size=100,
-                 validation_split=0, callbacks=None, presort=False, verbose=True):
+                 validation_split=0, callbacks=None, sequential=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
                                       hidden_size, dropout_rate, activation)
@@ -86,6 +86,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.verbose = verbose
         self.validation_split = validation_split
         self.callbacks = callbacks
+        self.sequential = sequential
 
         # Cached variables 
         self.autocorrelation_ = None
@@ -146,7 +147,7 @@ class HDE(BaseEstimator, TransformerMixin):
         return corr
 
 
-    def _loss(self, z_dummy, z):
+    def _loss(self, z_dummy, z, w):
         loss = 0
         zs = []
         for i in range(self.n_components):
@@ -156,7 +157,7 @@ class HDE(BaseEstimator, TransformerMixin):
                 zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
             
             zs.append(zi)
-            loss += 1.0/K.log(self._corr(zi[:,0], zi[:,1]))
+            loss += w[i]/K.log(self._corr(zi[:,0], zi[:,1]))
 
         return loss
 
@@ -187,19 +188,37 @@ class HDE(BaseEstimator, TransformerMixin):
         all_data = self._create_dataset(X)
         train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
 
-        # Main fitting.
-        if not self.is_fitted or self._recompile:
-            self.hde.compile(optimizer=self.optimizer, loss=self._loss)
+        if self.sequential:
+            for i in range(self.n_components):
+                if self.verbose:
+                    print('Optimizing component {}'.format(i + 1))
+                
+                weights = np.zeros(self.n_components)
+                weights[i] = 0
+                
+                self.hde.compile(optimizer=self.optimizer, loss=lambda x1,x2: self._loss(x1, x2, weights))
+                self.hde.fit(
+                    [train_x0, train_xt], 
+                    train_x0, 
+                    validation_data=[[val_x0, val_xt], val_x0],
+                    callbacks=self.callbacks,
+                    batch_size=self.batch_size, 
+                    epochs=self.n_epochs, 
+                    verbose=self.verbose
+                )
+        else:
+            if not self.is_fitted or self._recompile:
+                self.hde.compile(optimizer=self.optimizer, loss=lambda x1,x2: self._loss(x1, x2, weights))
 
-        self.hde.fit(
-            [train_x0, train_xt], 
-            train_x0, 
-            validation_data=[[val_x0, val_xt], val_x0],
-            callbacks=self.callbacks,
-            batch_size=self.batch_size, 
-            epochs=self.n_epochs, 
-            verbose=self.verbose
-        )
+            self.hde.fit(
+                [train_x0, train_xt], 
+                train_x0, 
+                validation_data=[[val_x0, val_xt], val_x0],
+                callbacks=self.callbacks,
+                batch_size=self.batch_size, 
+                epochs=self.n_epochs, 
+                verbose=self.verbose
+            )
         
         # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
         out = self._encoder.predict(X, batch_size=self.batch_size)
