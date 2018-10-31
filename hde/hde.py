@@ -240,7 +240,12 @@ class HDE(BaseEstimator, TransformerMixin):
             )
         
         # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
-        out = self._encoder.predict(X, batch_size=self.batch_size)
+        if type(X) is list:
+            X_all = np.concatenate(X)
+        else:
+            X_all = X
+        
+        out = self._encoder.predict(X_all, batch_size=self.batch_size)
         out = self._process_orthogonal_components(out)
 
         # Compute and store autocorrelation.
