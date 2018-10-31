@@ -88,6 +88,8 @@ class HDE(BaseEstimator, TransformerMixin):
         self.callbacks = callbacks
         self.sequential = sequential
 
+        self.weights = np.ones(self.n_components)
+
         # Cached variables 
         self.autocorrelation_ = None
         self._sorted_idx = None
@@ -147,7 +149,7 @@ class HDE(BaseEstimator, TransformerMixin):
         return corr
 
 
-    def _loss(self, z_dummy, z, w):
+    def _loss(self, z_dummy, z):
         loss = 0
         zs = []
         for i in range(self.n_components):
@@ -157,7 +159,7 @@ class HDE(BaseEstimator, TransformerMixin):
                 zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
             
             zs.append(zi)
-            loss += w[i]/K.log(self._corr(zi[:,0], zi[:,1]))
+            loss += weights[i]/K.log(self._corr(zi[:,0], zi[:,1]))
 
         return loss
 
@@ -193,10 +195,10 @@ class HDE(BaseEstimator, TransformerMixin):
                 if self.verbose:
                     print('Optimizing component {}'.format(i + 1))
                 
-                weights = np.zeros(self.n_components)
-                weights[i] = 1
+                self.weights[:] = np.zeros(self.n_components)
+                self.weights[i] = 1
                 
-                self.hde.compile(optimizer=self.optimizer, loss=lambda x1,x2: self._loss(x1, x2, weights))
+                self.hde.compile(optimizer=self.optimizer, loss=self._loss)
                 self.hde.fit(
                     [train_x0, train_xt], 
                     train_x0, 
@@ -206,10 +208,12 @@ class HDE(BaseEstimator, TransformerMixin):
                     epochs=self.n_epochs, 
                     verbose=self.verbose
                 )
+            
+            # Reset them all back to even.
+            self.weights[:] = 1
         else:
             if not self.is_fitted or self._recompile:
-                weights = np.ones(self.n_components)
-                self.hde.compile(optimizer=self.optimizer, loss=lambda x1,x2: self._loss(x1, x2, weights))
+                self.hde.compile(optimizer=self.optimizer, loss=self._loss)
             
             self.hde.fit(
                 [train_x0, train_xt], 
