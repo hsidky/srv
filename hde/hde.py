@@ -165,8 +165,19 @@ class HDE(BaseEstimator, TransformerMixin):
 
 
     def _create_dataset(self, data):
-        x_t0 = data[:-self.lag_time]
-        x_tt = data[self.lag_time:]
+        if type(data) is list: 
+            x_t0 = []
+            x_tt = []
+            for item in data:
+                x_t0.append(item[:-self.lag_time])
+                x_tt.append(item[self.lag_time:])
+            
+            x_t0 = np.concatenate(x_t0)
+            x_tt = np.concatenate(x_tt) 
+        else:
+            x_t0 = data[:-self.lag_time]
+            x_tt = data[self.lag_time:]
+
         return [x_t0, x_tt]
 
 
