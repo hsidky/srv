@@ -9,6 +9,8 @@ from keras.optimizers import Adam
 import keras.layers as layers
 
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.model_selection import train_test_split
+
 
 __all__ = ['HDE']
 
@@ -182,16 +184,17 @@ class HDE(BaseEstimator, TransformerMixin):
 
 
     def fit(self, X, y=None):
-        train_data = self._create_dataset(X)
+        all_data = self._create_dataset(X)
+        train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
 
         # Main fitting.
         if not self.is_fitted or self._recompile:
             self.hde.compile(optimizer=self.optimizer, loss=self._loss)
 
         self.hde.fit(
-            train_data, 
-            train_data[0], 
-            validation_split=self.validation_split,
+            [train_x0, train_xt], 
+            train_x0, 
+            validation_data=[[val_x0, val_xt], val_x0],
             callbacks=self.callbacks,
             batch_size=self.batch_size, 
             epochs=self.n_epochs, 
