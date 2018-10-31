@@ -65,9 +65,9 @@ def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matri
 class HDE(BaseEstimator, TransformerMixin):
 
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
-                 learning_rate=0.001, dropout_rate=0, hidden_layer_depth=2, 
-                 hidden_size=100, activation='tanh', batch_size=100, 
-                 presort=False, verbose=True):
+                 learning_rate=0.001, dropout_rate=0, hidden_layer_depth=2,
+                 hidden_size=100, activation='tanh', batch_size=100,
+                 validation_split=0, callbacks=None, presort=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
                                       hidden_size, dropout_rate, activation)
@@ -82,6 +82,8 @@ class HDE(BaseEstimator, TransformerMixin):
         self.dropout_rate = dropout_rate
         self.batch_size = batch_size
         self.verbose = verbose
+        self.validation_split = validation_split
+        self.callbacks = callbacks
 
         # Cached variables 
         self.autocorrelation_ = None
@@ -189,6 +191,8 @@ class HDE(BaseEstimator, TransformerMixin):
         self.hde.fit(
             train_data, 
             train_data[0], 
+            validation_split=self.validation_split,
+            callbacks=self.callbacks,
             batch_size=self.batch_size, 
             epochs=self.n_epochs, 
             verbose=self.verbose
