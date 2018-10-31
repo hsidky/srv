@@ -194,7 +194,7 @@ class HDE(BaseEstimator, TransformerMixin):
                     print('Optimizing component {}'.format(i + 1))
                 
                 weights = np.zeros(self.n_components)
-                weights[i] = 0
+                weights[i] = 1
                 
                 self.hde.compile(optimizer=self.optimizer, loss=lambda x1,x2: self._loss(x1, x2, weights))
                 self.hde.fit(
@@ -208,8 +208,9 @@ class HDE(BaseEstimator, TransformerMixin):
                 )
         else:
             if not self.is_fitted or self._recompile:
+                weights = np.ones(self.n_components)
                 self.hde.compile(optimizer=self.optimizer, loss=lambda x1,x2: self._loss(x1, x2, weights))
-
+            
             self.hde.fit(
                 [train_x0, train_xt], 
                 train_x0, 
