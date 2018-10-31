@@ -159,7 +159,7 @@ class HDE(BaseEstimator, TransformerMixin):
                 zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
             
             zs.append(zi)
-            loss += weights[i]/K.log(self._corr(zi[:,0], zi[:,1]))
+            loss += self.weights[i]/K.log(self._corr(zi[:,0], zi[:,1]))
 
         return loss
 
