@@ -174,9 +174,11 @@ class HDE(BaseEstimator, TransformerMixin):
             
             x_t0 = np.concatenate(x_t0)
             x_tt = np.concatenate(x_tt) 
-        else:
+        elif type(data) is np.ndarray:
             x_t0 = data[:-self.lag_time]
             x_tt = data[self.lag_time:]
+        else:
+            raise TypeError('Data type {} is not supported'.format(type(data)))
 
         return [x_t0, x_tt]
 
