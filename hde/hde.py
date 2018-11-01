@@ -238,6 +238,7 @@ class HDE(BaseEstimator, TransformerMixin):
         else:
             if not self.is_fitted or self._recompile:
                 self.hde.compile(optimizer=self.optimizer, loss=self._loss)
+                self._recompile = False
             
             self.hde.fit(
                 [train_x0, train_xt], 
