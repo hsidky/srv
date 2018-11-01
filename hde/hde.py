@@ -16,11 +16,12 @@ __all__ = ['HDE']
 
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
-                   hidden_size, dropout_rate, activation):
+                   hidden_size, dropout_rate, batch_norm, activation):
     encoder_input = layers.Input(shape=(input_size,))
     encoder = layers.Dense(hidden_size, activation=activation)(encoder_input)
     for _ in range(hidden_layer_depth - 1):
-        encoder = layers.BatchNormalization(axis=1)(encoder)
+        if batch_norm:
+            encoder = layers.BatchNormalization(axis=1)(encoder)
         encoder = layers.Dense(hidden_size, activation=activation)(encoder)
         if dropout_rate > 0:
             encoder = layers.Dropout(dropout_rate)(encoder)
@@ -70,10 +71,11 @@ class HDE(BaseEstimator, TransformerMixin):
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, dropout_rate=0, hidden_layer_depth=2,
                  hidden_size=100, activation='tanh', batch_size=100,
-                 validation_split=0, callbacks=None, sequential=False, verbose=True):
+                 validation_split=0, callbacks=None, sequential=False, 
+                 reversible=False, batch_normalization=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
-                                      hidden_size, dropout_rate, activation)
+                                      hidden_size, dropout_rate, batch_normalization, activation)
         self.encoder = self._encoder
         self.hde = create_hde(self._encoder, input_size)
 
@@ -88,6 +90,8 @@ class HDE(BaseEstimator, TransformerMixin):
         self.validation_split = validation_split
         self.callbacks = callbacks
         self.sequential = sequential
+        self.reversible = reversible
+        self.batch_normalization = batch_normalization
 
         self.weights = np.ones(self.n_components)
 
@@ -172,12 +176,18 @@ class HDE(BaseEstimator, TransformerMixin):
             for item in data:
                 x_t0.append(item[:-self.lag_time])
                 x_tt.append(item[self.lag_time:])
+                if self.reversible:
+                    x_t0.append(item[::-1][:-self.lag_time])
+                    x_tt.append(item[::-1][self.lag_time:])
             
             x_t0 = np.concatenate(x_t0)
             x_tt = np.concatenate(x_tt) 
         elif type(data) is np.ndarray:
             x_t0 = data[:-self.lag_time]
             x_tt = data[self.lag_time:]
+            if self.reversible:
+                x_t0 = np.concatenate([x_t0, data[::-1][:-self.lag_time]])
+                x_tt = np.concatenate([x_tt, data[::-1][self.lag_time:]])
         else:
             raise TypeError('Data type {} is not supported'.format(type(data)))
 
