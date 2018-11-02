@@ -7,7 +7,7 @@ from keras import backend as K
 from keras.models import Model
 from keras.optimizers import Adam
 import keras.layers as layers
-
+from keras.regularizers import l2
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
 
