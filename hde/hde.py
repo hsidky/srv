@@ -16,13 +16,23 @@ __all__ = ['HDE']
 
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
-                   hidden_size, dropout_rate, batch_norm, activation):
+                   hidden_size, dropout_rate, l2_reg, batch_norm, activation):
     encoder_input = layers.Input(shape=(input_size,))
-    encoder = layers.Dense(hidden_size, activation=activation)(encoder_input)
+    encoder = layers.Dense(
+                        hidden_size, 
+                        activation=activation, 
+                        kernel_regularizer=l2(l2_reg)
+                    )(encoder_input)
     for _ in range(hidden_layer_depth - 1):
         if batch_norm:
             encoder = layers.BatchNormalization(axis=1)(encoder)
-        encoder = layers.Dense(hidden_size, activation=activation)(encoder)
+
+        encoder = layers.Dense(
+                            hidden_size, 
+                            activation=activation,
+                            kernel_regularizer=l2(l2_reg)
+                        )(encoder)
+
         if dropout_rate > 0:
             encoder = layers.Dropout(dropout_rate)(encoder)
     
@@ -69,13 +79,14 @@ def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matri
 class HDE(BaseEstimator, TransformerMixin):
 
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
-                 learning_rate=0.001, dropout_rate=0, hidden_layer_depth=2,
-                 hidden_size=100, activation='tanh', batch_size=100,
-                 validation_split=0, callbacks=None, sequential=False, 
+                 learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
+                 hidden_layer_depth=2, hidden_size=100, activation='tanh', 
+                 batch_size=100, validation_split=0, callbacks=None, sequential=False, 
                  reversible=False, batch_normalization=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
-                                      hidden_size, dropout_rate, batch_normalization, activation)
+                                       hidden_size, dropout_rate, l2_regularization, 
+                                       batch_normalization, activation)
         self.encoder = self._encoder
         self.hde = create_hde(self._encoder, input_size)
 
@@ -85,6 +96,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.n_epochs = n_epochs
         self.learning_rate = learning_rate
         self.dropout_rate = dropout_rate
+        self.l2_regularization = l2_regularization
         self.batch_size = batch_size
         self.verbose = verbose
         self.validation_split = validation_split
