@@ -194,19 +194,28 @@ class HDE(BaseEstimator, TransformerMixin):
         return [x_t0, x_tt]
 
 
-    def _process_orthogonal_components(self, data):
-        self.empirical_means = np.mean(data, axis=0)
+    def _process_orthogonal_components(self, data, passive=False):
+        if not passive:
+            self.empirical_means = np.mean(data, axis=0)
         data -= self.empirical_means
 
-        self.scaling_matrix = np.ones((self.n_components, self.n_components))
+        if not passive:
+            self.scaling_matrix = np.ones((self.n_components, self.n_components))
+        
         for i in range(self.n_components):
-            for j in range(i):
-                gs_scale =  analysis.empirical_gram_schmidt(data[:,i], data[:,j])
+            for j in range(i):  
+                if not passive:
+                    gs_scale =  analysis.empirical_gram_schmidt(data[:,i], data[:,j])
+                    self.scaling_matrix[i,j] = gs_scale
+                    self.scaling_matrix[j,i] = gs_scale
+                else:
+                    gs_scale = self.scaling_matrix[i,j]
+                
                 data[:,i] -= gs_scale*data[:,j]
-                self.scaling_matrix[i,j] = gs_scale
-                self.scaling_matrix[j,i] = gs_scale
-
-        self.norm_factors = np.sqrt(np.mean(data*data, axis=0))
+        
+        if not passive:
+            self.norm_factors = np.sqrt(np.mean(data*data, axis=0))
+        
         return data
 
 
@@ -252,13 +261,23 @@ class HDE(BaseEstimator, TransformerMixin):
         
         # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
         if type(X) is list:
-            X_all = np.concatenate(X)
-        else:
-            X_all = X
-        
-        out = self._encoder.predict(X_all, batch_size=self.batch_size)
-        out = self._process_orthogonal_components(out)
+            temp = []
+            for item in X:
+                pred = self._encoder.predict(item, batch_size=self.batch_size)
+                temp.append(pred)
 
+            self._process_orthogonal_components(np.concatenate(temp))
+            
+            out = []
+            for item in temp:
+                out.append(self._process_orthogonal_components(item, passive=True))
+
+        elif type(X) is np.ndarray:
+            out = self._encoder.predict(X, batch_size=self.batch_size)
+            out = self._process_orthogonal_components(out)
+        else:
+            raise TypeError('Data type {} is not supported'.format(type(X)))
+        
         # Compute and store autocorrelation.
         out_t0, out_tt = self._create_dataset(out)
 
