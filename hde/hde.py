@@ -171,7 +171,7 @@ class HDE(BaseEstimator, TransformerMixin):
         zs = []
         for i in range(self.n_components):
             zi = z[:,i::self.n_components]
-            zi -= K.mean(zi)
+            zi -= K.mean(zi, axis=0)
             for zj in zs:
                 zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
             
