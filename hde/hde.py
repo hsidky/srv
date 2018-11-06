@@ -37,6 +37,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
             encoder = layers.Dropout(dropout_rate)(encoder)
     
     encoder = layers.Dense(output_size, activation=activation)(encoder)
+    #encoder = layers.GaussianNoise(stddev=0.05)(encoder)
     model = Model(encoder_input, encoder)
     return model
 
@@ -62,10 +63,10 @@ def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matri
                 xi -= gs_matrix[i, j]*xs[j]
             xs.append(xi)
 
-        xs = [xs[i] for i in order]
         xo = K.stack(xs, axis=1)
-
         xo /= norms
+
+        xo = K.stack([xo[:,i] for i in order], axis=1)
         return xo
     
     inp = layers.Input(shape=(input_size,))
