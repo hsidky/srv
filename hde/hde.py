@@ -81,8 +81,8 @@ class HDE(BaseEstimator, TransformerMixin):
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
                  hidden_layer_depth=2, hidden_size=100, activation='tanh', 
-                 batch_size=100, validation_split=0, callbacks=None, sequential=False, 
-                 reversible=False, batch_normalization=False, verbose=True):
+                 batch_size=100, validation_split=0, callbacks=None, 
+                 batch_normalization=False, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
                                        hidden_size, dropout_rate, l2_regularization, 
@@ -101,8 +101,6 @@ class HDE(BaseEstimator, TransformerMixin):
         self.verbose = verbose
         self.validation_split = validation_split
         self.callbacks = callbacks
-        self.sequential = sequential
-        self.reversible = reversible
         self.batch_normalization = batch_normalization
 
         self.weights = np.ones(self.n_components)
@@ -188,18 +186,12 @@ class HDE(BaseEstimator, TransformerMixin):
             for item in data:
                 x_t0.append(item[:-self.lag_time])
                 x_tt.append(item[self.lag_time:])
-                if self.reversible:
-                    x_t0.append(item[::-1][:-self.lag_time])
-                    x_tt.append(item[::-1][self.lag_time:])
             
             x_t0 = np.concatenate(x_t0)
             x_tt = np.concatenate(x_tt) 
         elif type(data) is np.ndarray:
             x_t0 = data[:-self.lag_time]
             x_tt = data[self.lag_time:]
-            if self.reversible:
-                x_t0 = np.concatenate([x_t0, data[::-1][:-self.lag_time]])
-                x_tt = np.concatenate([x_tt, data[::-1][self.lag_time:]])
         else:
             raise TypeError('Data type {} is not supported'.format(type(data)))
 
@@ -233,45 +225,28 @@ class HDE(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         all_data = self._create_dataset(X)
-        train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
-
-        if self.sequential:
-            for i in range(self.n_components):
-                if self.verbose:
-                    print('Optimizing component {}'.format(i + 1))
-                
-                self.weights[:] = np.zeros(self.n_components)
-                self.weights[i] = 1
-                
-                self.hde.compile(optimizer=self.optimizer, loss=self._loss)
-                self.hde.fit(
-                    [train_x0, train_xt], 
-                    train_x0, 
-                    validation_data=[[val_x0, val_xt], val_x0],
-                    callbacks=self.callbacks,
-                    batch_size=self.batch_size, 
-                    epochs=self.n_epochs, 
-                    verbose=self.verbose
-                )
             
-            # Reset them all back to even.
-            self.weights[:] = 1
+        if y is not None:
+            train_x0, train_xt = all_data
+            validation_data = self._create_dataset(y)
         else:
-            if not self.is_fitted or self._recompile:
-                self.hde.compile(optimizer=self.optimizer, loss=self._loss)
-                self._recompile = False
-            
-            self.hde.fit(
-                [train_x0, train_xt], 
-                train_x0, 
-                validation_data=[[val_x0, val_xt], val_x0],
-                callbacks=self.callbacks,
-                batch_size=self.batch_size, 
-                epochs=self.n_epochs, 
-                verbose=self.verbose
-            )
+            train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
+            validation_data = [[val_x0, val_xt], val_x0]
         
-        # Evaluate data and store empirical means, Gram-Schmidt scaling factors.
+        if not self.is_fitted or self._recompile:
+            self.hde.compile(optimizer=self.optimizer, loss=self._loss)
+            self._recompile = False
+        
+        self.hde.fit(
+            [train_x0, train_xt], 
+            train_x0, 
+            validation_data=[validation_data, validation_data[0]],
+            callbacks=self.callbacks,
+            batch_size=self.batch_size, 
+            epochs=self.n_epochs, 
+            verbose=self.verbose
+        )
+    
         if type(X) is list:
             temp = []
             for item in X:
@@ -290,9 +265,9 @@ class HDE(BaseEstimator, TransformerMixin):
         else:
             raise TypeError('Data type {} is not supported'.format(type(X)))
         
-        # Compute and store autocorrelation.
         out_t0, out_tt = self._create_dataset(out)
-
+        
+        # Compute and store autocorrelation.
         self.autocorrelation_ = np.array([
             analysis.empirical_correlation(out_t0[:,i], out_tt[:,i]) 
             for i in range(self.n_components)])
