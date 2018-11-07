@@ -232,7 +232,7 @@ class HDE(BaseEstimator, TransformerMixin):
             validation_data = self._create_dataset(y)
         else:
             train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
-            validation_data = [[val_x0, val_xt], val_x0]
+            validation_data = [val_x0, val_xt]
         
         if not self.is_fitted or self._recompile:
             self.hde.compile(optimizer=self.optimizer, loss=self._loss)
