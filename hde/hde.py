@@ -16,7 +16,8 @@ __all__ = ['HDE']
 
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
-                   hidden_size, dropout_rate, l2_reg, batch_norm, activation):
+                   hidden_size, dropout_rate, noise_std, l2_reg, 
+                   batch_norm, activation):
     encoder_input = layers.Input(shape=(input_size,))
     encoder = layers.Dense(
                         hidden_size, 
@@ -37,7 +38,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
             encoder = layers.Dropout(dropout_rate)(encoder)
     
     encoder = layers.Dense(output_size, activation=activation)(encoder)
-    #encoder = layers.GaussianNoise(stddev=0.05)(encoder)
+    encoder = layers.GaussianNoise(stddev=noise_std)(encoder)
     model = Model(encoder_input, encoder)
     return model
 
@@ -83,11 +84,12 @@ class HDE(BaseEstimator, TransformerMixin):
                  learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
                  hidden_layer_depth=2, hidden_size=100, activation='tanh', 
                  batch_size=100, validation_split=0, callbacks=None, 
-                 batch_normalization=False, verbose=True):
+                 batch_normalization=False, latent_space_noise=0, verbose=True):
 
         self._encoder = create_encoder(input_size, n_components, hidden_layer_depth,
-                                       hidden_size, dropout_rate, l2_regularization, 
-                                       batch_normalization, activation)
+                                       hidden_size, dropout_rate, latent_space_noise, 
+                                       l2_regularization, batch_normalization, 
+                                       activation)
         self.encoder = self._encoder
         self.hde = create_hde(self._encoder, input_size)
 
@@ -103,6 +105,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.validation_split = validation_split
         self.callbacks = callbacks
         self.batch_normalization = batch_normalization
+        self.latent_space_noise = latent_space_noise
 
         self.weights = np.ones(self.n_components)
 
@@ -180,19 +183,22 @@ class HDE(BaseEstimator, TransformerMixin):
         return loss
 
 
-    def _create_dataset(self, data):
+    def _create_dataset(self, data, lag_time=None):
+        if lag_time is None:
+            lag_time = self.lag_time
+
         if type(data) is list: 
             x_t0 = []
             x_tt = []
             for item in data:
-                x_t0.append(item[:-self.lag_time])
-                x_tt.append(item[self.lag_time:])
+                x_t0.append(item[:-lag_time])
+                x_tt.append(item[lag_time:])
             
             x_t0 = np.concatenate(x_t0)
             x_tt = np.concatenate(x_tt) 
         elif type(data) is np.ndarray:
-            x_t0 = data[:-self.lag_time]
-            x_tt = data[self.lag_time:]
+            x_t0 = data[:-lag_time]
+            x_tt = data[lag_time:]
         else:
             raise TypeError('Data type {} is not supported'.format(type(data)))
 
@@ -222,6 +228,22 @@ class HDE(BaseEstimator, TransformerMixin):
             self.norm_factors = np.sqrt(np.mean(data*data, axis=0))
         
         return data
+
+    def score(self, X, lag_time=None, score_k=None):
+        if not self.is_fitted:
+            raise RuntimeError('Model needs to be fit first.')
+
+        if score_k is None:
+            score_k = self.n_components
+        
+        x_t0, x_tt = self._create_dataset(X, lag_time=lag_time)
+        z_t0 = self.transform(x_t0)
+        z_tt = self.transform(x_tt)
+
+        rho = np.array([analysis.empirical_correlation(z_t0[:,i], z_tt[:,i]) for i in range(score_k)])
+        score = 1. + np.sum(rho**2)
+
+        return score
 
 
     def fit(self, X, y=None):
