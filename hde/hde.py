@@ -3,6 +3,7 @@ import numpy as np
 
 from . import analysis 
 
+import tensorflow as tf
 from keras import backend as K
 from keras.models import Model
 from keras.optimizers import Adam
@@ -13,6 +14,48 @@ from sklearn.model_selection import train_test_split
 
 
 __all__ = ['HDE']
+
+def minv(x, ret_sqrt=False):
+    '''Utility function that returns the inverse of a matrix, with the
+    option to return the square root of the inverse matrix.
+
+    Parameters
+    ----------
+    x: numpy array with shape [m,m]
+        matrix to be inverted
+        
+    ret_sqrt: bool, optional, default = False
+        if True, the square root of the inverse matrix is returned instead
+
+    Returns
+    -------
+    x_inv: numpy array with shape [m,m]
+        inverse of the original matrix
+    '''
+
+    # Calculate eigvalues and eigvectors
+    eigval_all, eigvec_all = tf.self_adjoint_eig(x)
+
+    # Filter out eigvalues below threshold and corresponding eigvectors
+    eig_th = tf.constant(K.epsilon(), dtype=tf.float32)
+    index_eig = tf.to_int32(eigval_all > eig_th)
+    _, eigval = tf.dynamic_partition(eigval_all, index_eig, 2)
+    _, eigvec = tf.dynamic_partition(tf.transpose(eigvec_all), index_eig, 2)
+
+    # Build the diagonal matrix with the filtered eigenvalues or square
+    # root of the filtered eigenvalues according to the parameter
+    eigval_inv = tf.diag(1/eigval)
+    eigval_inv_sqrt = tf.diag(tf.sqrt(1/eigval))
+    
+    cond_sqrt = tf.convert_to_tensor(ret_sqrt)
+    
+    diag = tf.cond(cond_sqrt, lambda: eigval_inv_sqrt, lambda: eigval_inv)
+
+    # Rebuild the square root of the inverse matrix
+    x_inv = tf.matmul(tf.transpose(eigvec), tf.matmul(diag, eigvec))
+
+    return x_inv
+
 
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
@@ -169,6 +212,36 @@ class HDE(BaseEstimator, TransformerMixin):
 
 
     def _loss(self, z_dummy, z):
+        N = tf.to_float(tf.shape(z)[0])
+
+        z_t0 = z[:, :self.n_components]
+        z_t0 -= K.mean(z_t0, axis=0)
+        
+        z_tt = z[:, self.n_components:]
+        z_tt -= K.mean(z_tt, axis=0)
+
+        C00 = 1/(N - 1)*K.dot(K.transpose(z_t0), z_t0)
+        C01 = 1/(N - 1)*K.dot(K.transpose(z_t0), z_tt)
+        C10 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_t0)
+        C11 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_tt)
+
+        C0 = 0.5*(C00 + C11)
+        C1 = 0.5*(C01 + C10)
+        
+        L = tf.cholesky(C0)
+        Linv = tf.matrix_inverse(L)
+
+        A = K.dot(K.dot(Linv, C1), K.transpose(Linv))
+
+        lambdas, vs = tf.self_adjoint_eig(A)
+        lambdas = tf.Print(lambdas, [lambdas], summarize=100, first_n=10)
+        #vamp_mat = K.dot(K.dot(minv(C00, ret_sqrt=True), C01), minv(C11, ret_sqrt=True))
+        #vamp_mat = tf.Print(vamp_mat, [vamp_mat], summarize=100, first_n=5)
+        #vamp_score = tf.norm(vamp_mat)
+        return -1.0 - K.sum(lambdas**2)
+
+    """
+    def _loss(self, z_dummy, z):
         loss = 0
         zs = []
         for i in range(self.n_components):
@@ -181,6 +254,7 @@ class HDE(BaseEstimator, TransformerMixin):
             loss += self.weights[i]/K.log(self._corr(zi[:,0], zi[:,1]))
 
         return loss
+    """
 
 
     def _create_dataset(self, data, lag_time=None):
