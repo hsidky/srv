@@ -1,9 +1,10 @@
 
-import numpy as np 
+import numpy as np
 
 from . import analysis 
 
 import tensorflow as tf
+import scipy.linalg
 from keras import backend as K
 from keras.models import Model
 from keras.optimizers import Adam
@@ -228,7 +229,7 @@ class HDE(BaseEstimator, TransformerMixin):
         C0 = 0.5*(C00 + C11)
         C1 = 0.5*(C01 + C10)
 
-        eigvals, eigvecs = np.linalg.eig(np.linalg.inv(C0).dot(C1))
+        eigvals, eigvecs = scipy.linalg.eigh(C1, b=C0)
         idx = np.argsort(eigvals)[::-1]
 
         self.eigenvalues_ = eigvals[idx]
@@ -241,13 +242,13 @@ class HDE(BaseEstimator, TransformerMixin):
             raise RuntimeError('Model needs to be fit first.')
 
         if score_k is None:
-            score_k = self.n_components
+            score_k = self.n_components + 1
         
         x_t0, x_tt = self._create_dataset(X, lag_time=lag_time)
         z_t0 = self.transform(x_t0)
         z_tt = self.transform(x_tt)
 
-        rho = np.array([analysis.empirical_correlation(z_t0[:,i], z_tt[:,i]) for i in range(score_k)])
+        rho = np.array([analysis.empirical_correlation(z_t0[:,i], z_tt[:,i]) for i in range(score_k - 1)])
         score = 1. + np.sum(rho**2)
 
         return score
@@ -278,7 +279,7 @@ class HDE(BaseEstimator, TransformerMixin):
         )
     
         if type(X) is list:
-            out = np.concatenate([self._encoder.predict(x, batch_size=self.batch_size) for x in X])
+            out = [self._encoder.predict(x, batch_size=self.batch_size) for x in X]
         elif type(X) is np.ndarray:
             out = self._encoder.predict(X, batch_size=self.batch_size)
         else:
