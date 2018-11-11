@@ -15,48 +15,6 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['HDE']
 
-def minv(x, ret_sqrt=False):
-    '''Utility function that returns the inverse of a matrix, with the
-    option to return the square root of the inverse matrix.
-
-    Parameters
-    ----------
-    x: numpy array with shape [m,m]
-        matrix to be inverted
-        
-    ret_sqrt: bool, optional, default = False
-        if True, the square root of the inverse matrix is returned instead
-
-    Returns
-    -------
-    x_inv: numpy array with shape [m,m]
-        inverse of the original matrix
-    '''
-
-    # Calculate eigvalues and eigvectors
-    eigval_all, eigvec_all = tf.self_adjoint_eig(x)
-
-    # Filter out eigvalues below threshold and corresponding eigvectors
-    eig_th = tf.constant(K.epsilon(), dtype=tf.float32)
-    index_eig = tf.to_int32(eigval_all > eig_th)
-    _, eigval = tf.dynamic_partition(eigval_all, index_eig, 2)
-    _, eigvec = tf.dynamic_partition(tf.transpose(eigvec_all), index_eig, 2)
-
-    # Build the diagonal matrix with the filtered eigenvalues or square
-    # root of the filtered eigenvalues according to the parameter
-    eigval_inv = tf.diag(1/eigval)
-    eigval_inv_sqrt = tf.diag(tf.sqrt(1/eigval))
-    
-    cond_sqrt = tf.convert_to_tensor(ret_sqrt)
-    
-    diag = tf.cond(cond_sqrt, lambda: eigval_inv_sqrt, lambda: eigval_inv)
-
-    # Rebuild the square root of the inverse matrix
-    x_inv = tf.matmul(tf.transpose(eigvec), tf.matmul(diag, eigvec))
-
-    return x_inv
-
-
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
                    hidden_size, dropout_rate, noise_std, l2_reg, 
@@ -96,30 +54,24 @@ def create_hde(encoder, input_size):
     return hde
 
 
-def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matrix, norms, order): 
-    
-    def layer(x, n_components=n_components, means=means, gs_matrix=gs_matrix, norms=norms, order=order):
+def create_vac_encoder(encoder, input_size, n_components, means, eigenvectors, norms):
+    k_means = K.variable(means)
+    k_eigenvectors = K.variable(eigenvectors)
+    k_norms = K.variable(norms)
+
+    def layer(x, n_components=n_components, means=k_means, eigenvectors=k_eigenvectors, norms=k_norms):
         x -= means
-        xs = []
-        for i in range(n_components):
-            xi = x[:,i]
-            for j in range(i):
-                xi -= gs_matrix[i, j]*xs[j]
-            xs.append(xi)
-
-        xo = K.stack(xs, axis=1)
-        xo /= norms
-
-        xo = K.stack([xo[:,i] for i in order], axis=1)
-        return xo
+        z = K.dot(x, eigenvectors)
+        z /= norms
+        return z
     
     inp = layers.Input(shape=(input_size,))
     z = encoder(inp)
-    z_orth = layers.Lambda(layer)(z)
-    orth_encoder = Model(inp, z_orth)
+    z_vac = layers.Lambda(layer)(z)
+    vac_encoder = Model(inp, z_vac)
 
-    return orth_encoder
-
+    return vac_encoder
+        
 
 class HDE(BaseEstimator, TransformerMixin):
 
@@ -153,8 +105,9 @@ class HDE(BaseEstimator, TransformerMixin):
         self.weights = np.ones(self.n_components)
 
         # Cached variables 
-        self.autocorrelation_ = None
-        self._sorted_idx = None
+        self.eigenvalues_ = None
+        self.eigenvectors_ = None
+        self.means_ = None 
         self._recompile = False
 
         self.is_fitted = False
@@ -187,7 +140,7 @@ class HDE(BaseEstimator, TransformerMixin):
     @property
     def timescales_(self):
         if self.is_fitted:
-            return -self.lag_time/np.log(self.autocorrelation_)
+            return -self.lag_time/np.log(self.eigenvalues_)
         
         raise RuntimeError('Model needs to be fit first.')
 
@@ -234,27 +187,7 @@ class HDE(BaseEstimator, TransformerMixin):
         A = K.dot(K.dot(Linv, C1), K.transpose(Linv))
 
         lambdas, vs = tf.self_adjoint_eig(A)
-        lambdas = tf.Print(lambdas, [lambdas], summarize=100, first_n=10)
-        #vamp_mat = K.dot(K.dot(minv(C00, ret_sqrt=True), C01), minv(C11, ret_sqrt=True))
-        #vamp_mat = tf.Print(vamp_mat, [vamp_mat], summarize=100, first_n=5)
-        #vamp_score = tf.norm(vamp_mat)
         return -1.0 - K.sum(lambdas**2)
-
-    """
-    def _loss(self, z_dummy, z):
-        loss = 0
-        zs = []
-        for i in range(self.n_components):
-            zi = z[:,i::self.n_components]
-            zi -= K.mean(zi, axis=0)
-            for zj in zs:
-                zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
-            
-            zs.append(zi)
-            loss += self.weights[i]/K.log(self._corr(zi[:,0], zi[:,1]))
-
-        return loss
-    """
 
 
     def _create_dataset(self, data, lag_time=None):
@@ -279,29 +212,29 @@ class HDE(BaseEstimator, TransformerMixin):
         return [x_t0, x_tt]
 
 
-    def _process_orthogonal_components(self, data, passive=False):
-        if not passive:
-            self.empirical_means = np.mean(data, axis=0)
-        data -= self.empirical_means
+    def _calculate_basis(self, x_t0, x_tt):
+        N = x_t0.shape[0]
+        x = np.concatenate([x_t0, x_tt])
+        self.means_ = np.mean(x, axis=0)
 
-        if not passive:
-            self.scaling_matrix = np.ones((self.n_components, self.n_components))
-        
-        for i in range(self.n_components):
-            for j in range(i):  
-                if not passive:
-                    gs_scale =  analysis.empirical_gram_schmidt(data[:,i], data[:,j])
-                    self.scaling_matrix[i,j] = gs_scale
-                    self.scaling_matrix[j,i] = gs_scale
-                else:
-                    gs_scale = self.scaling_matrix[i,j]
-                
-                data[:,i] -= gs_scale*data[:,j]
-        
-        if not passive:
-            self.norm_factors = np.sqrt(np.mean(data*data, axis=0))
-        
-        return data
+        x_t0m = x_t0 - self.means_
+        x_ttm = x_tt - self.means_
+
+        C00 = 1/(N - 1)*x_t0m.T.dot(x_t0m)
+        C01 = 1/(N - 1)*x_t0m.T.dot(x_ttm)
+        C10 = 1/(N - 1)*x_ttm.T.dot(x_t0m)
+        C11 = 1/(N - 1)*x_ttm.T.dot(x_ttm)
+
+        C0 = 0.5*(C00 + C11)
+        C1 = 0.5*(C01 + C10)
+
+        eigvals, eigvecs = np.linalg.eig(np.linalg.inv(C0).dot(C1))
+        idx = np.argsort(eigvals)[::-1]
+
+        self.eigenvalues_ = eigvals[idx]
+        self.eigenvectors_ = eigvecs[:, idx]
+        self.norms_ = np.sqrt(np.mean(x*x, axis=0))
+
 
     def score(self, X, lag_time=None, score_k=None):
         if not self.is_fitted:
@@ -345,42 +278,23 @@ class HDE(BaseEstimator, TransformerMixin):
         )
     
         if type(X) is list:
-            temp = []
-            for item in X:
-                pred = self._encoder.predict(item, batch_size=self.batch_size)
-                temp.append(pred)
-
-            self._process_orthogonal_components(np.concatenate(temp))
-            
-            out = []
-            for item in temp:
-                out.append(self._process_orthogonal_components(item, passive=True))
-
+            out = np.concatenate([self._encoder.predict(x, batch_size=self.batch_size) for x in X])
         elif type(X) is np.ndarray:
             out = self._encoder.predict(X, batch_size=self.batch_size)
-            out = self._process_orthogonal_components(out)
         else:
             raise TypeError('Data type {} is not supported'.format(type(X)))
         
         out_t0, out_tt = self._create_dataset(out)
         
-        # Compute and store autocorrelation.
-        self.autocorrelation_ = np.array([
-            analysis.empirical_correlation(out_t0[:,i], out_tt[:,i]) 
-            for i in range(self.n_components)])
-        
-        # Sort descending.
-        self._sorted_idx = np.argsort(self.autocorrelation_)[::-1]
-        self.autocorrelation_ = self.autocorrelation_[self._sorted_idx]
+        self._calculate_basis(out_t0, out_tt)
 
-        self.encoder = create_orthogonal_encoder(
-            self._encoder, 
-            self.input_size, 
+        self.encoder = create_vac_encoder(
+            self._encoder,
+            self.input_size,
             self.n_components,
-            self.empirical_means,
-            self.scaling_matrix, 
-            self.norm_factors,
-            self._sorted_idx
+            self.means_,
+            self.eigenvectors_,
+            self.norms_
         )
 
         self.is_fitted = True
