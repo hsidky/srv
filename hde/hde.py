@@ -127,15 +127,14 @@ class HDE(BaseEstimator, TransformerMixin):
         self.learning_rate = self._learning_rate_
         self.hde = create_hde(self._encoder, self.input_size)
         if self.is_fitted:
-            self.encoder = create_orthogonal_encoder(
-                            self._encoder, 
-                            self.input_size, 
-                            self.n_components,
-                            self.empirical_means,
-                            self.scaling_matrix, 
-                            self.norm_factors,
-                            self._sorted_idx
-                        )
+            self.encoder = create_vac_encoder(
+                self._encoder,
+                self.input_size,
+                self.n_components,
+                self.means_,
+                self.eigenvectors_,
+                self.norms_
+            )
 
 
     @property
@@ -268,7 +267,7 @@ class HDE(BaseEstimator, TransformerMixin):
             self.hde.compile(optimizer=self.optimizer, loss=self._loss)
             self._recompile = False
         
-        self.hde.fit(
+        self.history = self.hde.fit(
             [train_x0, train_xt], 
             train_x0, 
             validation_data=[validation_data, validation_data[0]],
