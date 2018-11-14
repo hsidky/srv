@@ -150,14 +150,22 @@ class HDE(BaseEstimator, TransformerMixin):
         self.means_ = None 
         self._recompile = False
 
+        self.history = None
         self.is_fitted = False
 
 
     def __getstate__(self):
+        if self.history is not None:
+            self.history.model = None 
+        if self.callbacks is not None:
+            for callback in self.callbacks:
+                callback.model = None
+        
         d = self.__dict__.copy()
         d.pop('encoder')
         d.pop('hde')
         d.pop('optimizer')
+
         return d
 
 
@@ -231,8 +239,8 @@ class HDE(BaseEstimator, TransformerMixin):
 
         A = K.dot(K.dot(Linv, C1), K.transpose(Linv))
 
-        lambdas, vs = tf.self_adjoint_eig(A)
-        return -1.0 - K.sum(lambdas**2)
+        lambdas, _ = tf.self_adjoint_eig(A)
+        return -1.0 - K.sum(self.weights*lambdas**2)
 
 
     def _create_dataset(self, data, lag_time=None):
@@ -257,14 +265,13 @@ class HDE(BaseEstimator, TransformerMixin):
         return [x_t0, x_tt]
 
 
-    def _calculate_basis(self, x_t0, x_tt):
-        x_t0 = x_t0.astype(np.float64)
-        x_tt = x_tt.astype(np.float64)
+    def _calculate_basis(self, x):
+        x = x.astype(np.float64)
+        self.means_ = np.mean(x, axis=0)
+        
+        x_t0, x_tt = self._create_dataset(x)
 
         N = x_t0.shape[0]
-        x = np.concatenate([x_t0, x_tt])
-        self.means_ = np.mean(x, axis=0)
-
         x_t0m = x_t0 - x_t0.mean(axis=0)
         x_ttm = x_tt - x_tt.mean(axis=0)
 
@@ -282,7 +289,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.eigenvalues_ = eigvals[idx]
         self.eigenvectors_ = eigvecs[:, idx]
 
-        z = x.dot(self.eigenvectors_)
+        z = (x - self.means_).dot(self.eigenvectors_)
 
         self.norms_ = np.sqrt(np.mean(z*z, axis=0))
 
@@ -335,9 +342,7 @@ class HDE(BaseEstimator, TransformerMixin):
         else:
             raise TypeError('Data type {} is not supported'.format(type(X)))
         
-        out_t0, out_tt = self._create_dataset(out)
-        
-        self._calculate_basis(out_t0, out_tt)
+        self._calculate_basis(out)
 
         self.encoder = create_vac_encoder(
             self._encoder,
