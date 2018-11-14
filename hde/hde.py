@@ -265,12 +265,13 @@ class HDE(BaseEstimator, TransformerMixin):
         return [x_t0, x_tt]
 
 
-    def _calculate_basis(self, x):
-        x = x.astype(np.float64)
+    def _calculate_basis(self, x_t0, x_tt):
+        x_t0 = x_t0.astype(np.float64)
+        x_tt = x_tt.astype(np.float64)
+        
+        x = np.concatenate([x_t0, x_tt])
         self.means_ = np.mean(x, axis=0)
         
-        x_t0, x_tt = self._create_dataset(x)
-
         N = x_t0.shape[0]
         x_t0m = x_t0 - x_t0.mean(axis=0)
         x_ttm = x_tt - x_tt.mean(axis=0)
@@ -342,7 +343,9 @@ class HDE(BaseEstimator, TransformerMixin):
         else:
             raise TypeError('Data type {} is not supported'.format(type(X)))
         
-        self._calculate_basis(out)
+
+        out_t0, out_tt = self._create_dataset(out)
+        self._calculate_basis(out_t0, out_tt)
 
         self.encoder = create_vac_encoder(
             self._encoder,
