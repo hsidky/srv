@@ -67,7 +67,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
                     )(encoder_input)
     for _ in range(hidden_layer_depth - 1):
         if batch_norm:
-            encoder = layers.BatchNormalization(axis=1)(encoder)
+            encoder = layers.BatchNormalization(axis=1, momentum=0.1, epsilon=1e-5)(encoder)
 
         encoder = layers.Dense(
                             hidden_size, 
@@ -78,7 +78,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
         if dropout_rate > 0:
             encoder = layers.Dropout(dropout_rate)(encoder)
     
-    encoder = layers.Dense(output_size, activation=activation)(encoder)
+    encoder = layers.Dense(output_size, activation='linear')(encoder)
     encoder = layers.GaussianNoise(stddev=noise_std)(encoder)
     model = Model(encoder_input, encoder)
     return model
