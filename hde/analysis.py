@@ -11,8 +11,12 @@ def empirical_correlation(x, y):
 def generate_its(data, lags):
     its = []
     for lag in lags: 
-        x0 = data[:-lag]
-        x1 = data[lag:]
+        if type(data) is list:
+            x0 = np.concatenate([item[:-lag] for item in data])
+            x1 = np.concatenate([item[lag:] for item in data])
+        else:
+            x0 = data[:-lag]
+            x1 = data[lag:]
         ts = empirical_correlation(x0, x1)
         its.append(-lag/np.log(np.abs(ts)))
     
