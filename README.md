@@ -39,7 +39,9 @@ $ pip install ./hde
 
 Below is an example that demonstrates basic usage of **HDE**. Here we are using 
 [PyEMMA](http://emma-project.org/latest/) to extract features from a trajectory. 
-For more detailed examples see the examples folder. 
+
+For the examples presented in the original paper see the paper_notebooks folder.
+For other detailed examples see the examples and notebooks folders.
 
 ```python 
 import pyemma as py
