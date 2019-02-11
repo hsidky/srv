@@ -1,5 +1,5 @@
-# Heirarchical Dynamics Encoder
-Heirarchical dynamics encoder (HDE) is a deep learning-based
+# Hierarchical Dynamics Encoder
+Hierarchical dynamics encoder (HDE) is a deep learning-based
 framework to learn multiple hierarchical nonlinear kinetic slow modes.
 They are built on top of transfer operator theory, the variational 
 approach to conformational dynamics (VAC), and use a neural network as a
