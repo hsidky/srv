@@ -75,7 +75,59 @@ def create_vac_encoder(encoder, input_size, n_components, means, eigenvectors, n
         
 
 class HDE(BaseEstimator, TransformerMixin):
+    """ Heirarchical Dynamics Encoder (HDE)
+    
+    Learns collective variables that are nonlinear approximations 
+    to the leading (slow) eigenfunctions of the transfer operator 
+    for a system.
 
+    Parameters
+    ----------
+    input_size : int 
+        Number of dimensions of the input features.
+    n_components: int, default=2 
+        Number of collective variables (slow modes) to learn. 
+    lag_time: int, default=1
+        Time delay (in number of frames) to use for lagged correlation. 
+    n_epochs: int, default=100
+        Number of epochs to train the model.
+    learning_rate: float, default=0.001
+        Learning rate used during optimization.
+    dropout_rate: float, default=0
+        Fraction of neurons in hidden layer(s) to randomly set to zero
+        during training, which helps prevent overfitting. 
+    l2_regularization: float, default=0
+        Coefficient (strength) of ridge regression to apply to hidden layers.
+    hidden_layer_depth: int, default=2
+        Number of hidden layers in the HDE architecture. 
+    hidden_size: int, default=100
+        Number of neurons in each hidden layer of the HDE. 
+    activation: str, default='tanh'
+        Nonlinear activation function to use in the hidden layers.
+        Note: Output layer is always linear. 
+    batch_size: int, default=100
+        Batch size to use during training. 
+    validation_split: float, default=0
+        Fraction of data provided during fitting to use for validation. 
+    callbacks: list, default=None 
+        List containing Keras callbacks during training. These can be used for early stopping
+        or model checkpointing. 
+    batch_normalization: bool, default=False
+        Whether or not to apply batch normalization during training. This technique 
+        can improve the performance and stability of the HDE. 
+    latent_space_noise: float, default=0 
+        Standard deviation of Gaussian noise to apply to the slow modes being learned 
+        during training. This is a technique to prevent overfitting. 
+    verbose: bool, default=True
+        Whether or not to be verbose during training.
+    
+    Attributes
+    __________
+    eigenvalues_: float
+        Eigenvalues (autocorrelation) of the learned collective variables. 
+    weights: :obj:`list` of :obj:`float`
+        List of weights to apply to each slow mode during optimization.
+    """
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
                  hidden_layer_depth=2, hidden_size=100, activation='tanh', 
@@ -147,6 +199,7 @@ class HDE(BaseEstimator, TransformerMixin):
 
     @property
     def timescales_(self):
+        """:obj:`list` of :obj:`float`: Timescales, in units of frames, associated with the learned slow modes."""
         if self.is_fitted:
             return -self.lag_time/np.log(self.eigenvalues_)
         
@@ -155,6 +208,7 @@ class HDE(BaseEstimator, TransformerMixin):
 
     @property
     def learning_rate(self):
+        """float: Learning rate used during optimization."""
         return self._learning_rate_
     
 
