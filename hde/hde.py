@@ -1,8 +1,10 @@
 
-import numpy as np 
+import numpy as np
 
 from . import analysis 
 
+import tensorflow as tf
+import scipy.linalg
 from keras import backend as K
 from keras.models import Model
 from keras.optimizers import Adam
@@ -26,7 +28,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
                     )(encoder_input)
     for _ in range(hidden_layer_depth - 1):
         if batch_norm:
-            encoder = layers.BatchNormalization(axis=1)(encoder)
+            encoder = layers.BatchNormalization(axis=1, momentum=0.1, epsilon=1e-5)(encoder)
 
         encoder = layers.Dense(
                             hidden_size, 
@@ -37,7 +39,7 @@ def create_encoder(input_size, output_size, hidden_layer_depth,
         if dropout_rate > 0:
             encoder = layers.Dropout(dropout_rate)(encoder)
     
-    encoder = layers.Dense(output_size, activation=activation)(encoder)
+    encoder = layers.Dense(output_size, activation='linear')(encoder)
     encoder = layers.GaussianNoise(stddev=noise_std)(encoder)
     model = Model(encoder_input, encoder)
     return model
@@ -53,33 +55,79 @@ def create_hde(encoder, input_size):
     return hde
 
 
-def create_orthogonal_encoder(encoder, input_size, n_components, means, gs_matrix, norms, order): 
-    
-    def layer(x, n_components=n_components, means=means, gs_matrix=gs_matrix, norms=norms, order=order):
+def create_vac_encoder(encoder, input_size, n_components, means, eigenvectors, norms):
+    k_means = K.variable(means)
+    k_eigenvectors = K.variable(eigenvectors)
+    k_norms = K.variable(norms)
+
+    def layer(x, n_components=n_components, means=k_means, eigenvectors=k_eigenvectors, norms=k_norms):
         x -= means
-        xs = []
-        for i in range(n_components):
-            xi = x[:,i]
-            for j in range(i):
-                xi -= gs_matrix[i, j]*xs[j]
-            xs.append(xi)
-
-        xo = K.stack(xs, axis=1)
-        xo /= norms
-
-        xo = K.stack([xo[:,i] for i in order], axis=1)
-        return xo
+        z = K.dot(x, eigenvectors)
+        z /= norms
+        return z
     
     inp = layers.Input(shape=(input_size,))
     z = encoder(inp)
-    z_orth = layers.Lambda(layer)(z)
-    orth_encoder = Model(inp, z_orth)
+    z_vac = layers.Lambda(layer)(z)
+    vac_encoder = Model(inp, z_vac)
 
-    return orth_encoder
-
+    return vac_encoder
+        
 
 class HDE(BaseEstimator, TransformerMixin):
+    """ Heirarchical Dynamics Encoder (HDE)
+    
+    Learns collective variables that are nonlinear approximations 
+    to the leading (slow) eigenfunctions of the transfer operator 
+    for a system.
 
+    Parameters
+    ----------
+    input_size : int 
+        Number of dimensions of the input features.
+    n_components: int, default=2 
+        Number of collective variables (slow modes) to learn. 
+    lag_time: int, default=1
+        Time delay (in number of frames) to use for lagged correlation. 
+    n_epochs: int, default=100
+        Number of epochs to train the model.
+    learning_rate: float, default=0.001
+        Learning rate used during optimization.
+    dropout_rate: float, default=0
+        Fraction of neurons in hidden layer(s) to randomly set to zero
+        during training, which helps prevent overfitting. 
+    l2_regularization: float, default=0
+        Coefficient (strength) of ridge regression to apply to hidden layers.
+    hidden_layer_depth: int, default=2
+        Number of hidden layers in the HDE architecture. 
+    hidden_size: int, default=100
+        Number of neurons in each hidden layer of the HDE. 
+    activation: str, default='tanh'
+        Nonlinear activation function to use in the hidden layers.
+        Note: Output layer is always linear. 
+    batch_size: int, default=100
+        Batch size to use during training. 
+    validation_split: float, default=0
+        Fraction of data provided during fitting to use for validation. 
+    callbacks: list, default=None 
+        List containing Keras callbacks during training. These can be used for early stopping
+        or model checkpointing. 
+    batch_normalization: bool, default=False
+        Whether or not to apply batch normalization during training. This technique 
+        can improve the performance and stability of the HDE. 
+    latent_space_noise: float, default=0 
+        Standard deviation of Gaussian noise to apply to the slow modes being learned 
+        during training. This is a technique to prevent overfitting. 
+    verbose: bool, default=True
+        Whether or not to be verbose during training.
+    
+    Attributes
+    __________
+    eigenvalues_: float
+        Eigenvalues (autocorrelation) of the learned collective variables. 
+    weights: :obj:`list` of :obj:`float`
+        List of weights to apply to each slow mode during optimization.
+    """
     def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
                  learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
                  hidden_layer_depth=2, hidden_size=100, activation='tanh', 
@@ -110,18 +158,27 @@ class HDE(BaseEstimator, TransformerMixin):
         self.weights = np.ones(self.n_components)
 
         # Cached variables 
-        self.autocorrelation_ = None
-        self._sorted_idx = None
+        self.eigenvalues_ = None
+        self.eigenvectors_ = None
+        self.means_ = None 
         self._recompile = False
 
+        self.history = None
         self.is_fitted = False
 
 
     def __getstate__(self):
+        if self.history is not None:
+            self.history.model = None 
+        if self.callbacks is not None:
+            for callback in self.callbacks:
+                callback.model = None
+        
         d = self.__dict__.copy()
         d.pop('encoder')
         d.pop('hde')
         d.pop('optimizer')
+
         return d
 
 
@@ -130,27 +187,28 @@ class HDE(BaseEstimator, TransformerMixin):
         self.learning_rate = self._learning_rate_
         self.hde = create_hde(self._encoder, self.input_size)
         if self.is_fitted:
-            self.encoder = create_orthogonal_encoder(
-                            self._encoder, 
-                            self.input_size, 
-                            self.n_components,
-                            self.empirical_means,
-                            self.scaling_matrix, 
-                            self.norm_factors,
-                            self._sorted_idx
-                        )
+            self.encoder = create_vac_encoder(
+                self._encoder,
+                self.input_size,
+                self.n_components,
+                self.means_,
+                self.eigenvectors_,
+                self.norms_
+            )
 
 
     @property
     def timescales_(self):
+        """:obj:`list` of :obj:`float`: Timescales, in units of frames, associated with the learned slow modes."""
         if self.is_fitted:
-            return -self.lag_time/np.log(self.autocorrelation_)
+            return -self.lag_time/np.log(self.eigenvalues_)
         
         raise RuntimeError('Model needs to be fit first.')
 
 
     @property
     def learning_rate(self):
+        """float: Learning rate used during optimization."""
         return self._learning_rate_
     
 
@@ -169,18 +227,29 @@ class HDE(BaseEstimator, TransformerMixin):
 
 
     def _loss(self, z_dummy, z):
-        loss = 0
-        zs = []
-        for i in range(self.n_components):
-            zi = z[:,i::self.n_components]
-            zi -= K.mean(zi, axis=0)
-            for zj in zs:
-                zi -= K.mean(zi*zj, axis=0)/K.mean(zj*zj, axis=0)*zj
-            
-            zs.append(zi)
-            loss += self.weights[i]/K.log(self._corr(zi[:,0], zi[:,1]))
+        N = tf.to_float(tf.shape(z)[0])
 
-        return loss
+        z_t0 = z[:, :self.n_components]
+        z_t0 -= K.mean(z_t0, axis=0)
+        
+        z_tt = z[:, self.n_components:]
+        z_tt -= K.mean(z_tt, axis=0)
+
+        C00 = 1/(N - 1)*K.dot(K.transpose(z_t0), z_t0)
+        C01 = 1/(N - 1)*K.dot(K.transpose(z_t0), z_tt)
+        C10 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_t0)
+        C11 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_tt)
+
+        C0 = 0.5*(C00 + C11)
+        C1 = 0.5*(C01 + C10)
+        
+        L = tf.cholesky(C0)
+        Linv = tf.matrix_inverse(L)
+
+        A = K.dot(K.dot(Linv, C1), K.transpose(Linv))
+
+        lambdas, _ = tf.self_adjoint_eig(A)
+        return -1.0 - K.sum(self.weights*lambdas**2)
 
 
     def _create_dataset(self, data, lag_time=None):
@@ -205,42 +274,48 @@ class HDE(BaseEstimator, TransformerMixin):
         return [x_t0, x_tt]
 
 
-    def _process_orthogonal_components(self, data, passive=False):
-        if not passive:
-            self.empirical_means = np.mean(data, axis=0)
-        data -= self.empirical_means
+    def _calculate_basis(self, x_t0, x_tt):
+        x_t0 = x_t0.astype(np.float64)
+        x_tt = x_tt.astype(np.float64)
+        
+        x = np.concatenate([x_t0, x_tt])
+        self.means_ = np.mean(x, axis=0)
+        
+        N = x_t0.shape[0]
+        x_t0m = x_t0 - x_t0.mean(axis=0)
+        x_ttm = x_tt - x_tt.mean(axis=0)
 
-        if not passive:
-            self.scaling_matrix = np.ones((self.n_components, self.n_components))
-        
-        for i in range(self.n_components):
-            for j in range(i):  
-                if not passive:
-                    gs_scale =  analysis.empirical_gram_schmidt(data[:,i], data[:,j])
-                    self.scaling_matrix[i,j] = gs_scale
-                    self.scaling_matrix[j,i] = gs_scale
-                else:
-                    gs_scale = self.scaling_matrix[i,j]
-                
-                data[:,i] -= gs_scale*data[:,j]
-        
-        if not passive:
-            self.norm_factors = np.sqrt(np.mean(data*data, axis=0))
-        
-        return data
+        C00 = 1/N*x_t0m.T.dot(x_t0m)
+        C01 = 1/N*x_t0m.T.dot(x_ttm)
+        C10 = 1/N*x_ttm.T.dot(x_t0m)
+        C11 = 1/N*x_ttm.T.dot(x_ttm)
+
+        C0 = 0.5*(C00 + C11)
+        C1 = 0.5*(C01 + C10)
+
+        eigvals, eigvecs = scipy.linalg.eigh(C1, b=C0)
+        idx = np.argsort(eigvals)[::-1]
+
+        self.eigenvalues_ = eigvals[idx]
+        self.eigenvectors_ = eigvecs[:, idx]
+
+        z = (x - self.means_).dot(self.eigenvectors_)
+
+        self.norms_ = np.sqrt(np.mean(z*z, axis=0))
+
 
     def score(self, X, lag_time=None, score_k=None):
         if not self.is_fitted:
             raise RuntimeError('Model needs to be fit first.')
 
         if score_k is None:
-            score_k = self.n_components
+            score_k = self.n_components + 1
         
         x_t0, x_tt = self._create_dataset(X, lag_time=lag_time)
         z_t0 = self.transform(x_t0)
         z_tt = self.transform(x_tt)
 
-        rho = np.array([analysis.empirical_correlation(z_t0[:,i], z_tt[:,i]) for i in range(score_k)])
+        rho = np.array([analysis.empirical_correlation(z_t0[:,i], z_tt[:,i]) for i in range(score_k - 1)])
         score = 1. + np.sum(rho**2)
 
         return score
@@ -260,7 +335,7 @@ class HDE(BaseEstimator, TransformerMixin):
             self.hde.compile(optimizer=self.optimizer, loss=self._loss)
             self._recompile = False
         
-        self.hde.fit(
+        self.history = self.hde.fit(
             [train_x0, train_xt], 
             train_x0, 
             validation_data=[validation_data, validation_data[0]],
@@ -271,42 +346,23 @@ class HDE(BaseEstimator, TransformerMixin):
         )
     
         if type(X) is list:
-            temp = []
-            for item in X:
-                pred = self._encoder.predict(item, batch_size=self.batch_size)
-                temp.append(pred)
-
-            self._process_orthogonal_components(np.concatenate(temp))
-            
-            out = []
-            for item in temp:
-                out.append(self._process_orthogonal_components(item, passive=True))
-
+            out = [self._encoder.predict(x, batch_size=self.batch_size) for x in X]
         elif type(X) is np.ndarray:
             out = self._encoder.predict(X, batch_size=self.batch_size)
-            out = self._process_orthogonal_components(out)
         else:
             raise TypeError('Data type {} is not supported'.format(type(X)))
         
-        out_t0, out_tt = self._create_dataset(out)
-        
-        # Compute and store autocorrelation.
-        self.autocorrelation_ = np.array([
-            analysis.empirical_correlation(out_t0[:,i], out_tt[:,i]) 
-            for i in range(self.n_components)])
-        
-        # Sort descending.
-        self._sorted_idx = np.argsort(self.autocorrelation_)[::-1]
-        self.autocorrelation_ = self.autocorrelation_[self._sorted_idx]
 
-        self.encoder = create_orthogonal_encoder(
-            self._encoder, 
-            self.input_size, 
+        out_t0, out_tt = self._create_dataset(out)
+        self._calculate_basis(out_t0, out_tt)
+
+        self.encoder = create_vac_encoder(
+            self._encoder,
+            self.input_size,
             self.n_components,
-            self.empirical_means,
-            self.scaling_matrix, 
-            self.norm_factors,
-            self._sorted_idx
+            self.means_,
+            self.eigenvectors_,
+            self.norms_
         )
 
         self.is_fitted = True
