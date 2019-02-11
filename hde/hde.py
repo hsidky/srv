@@ -16,45 +16,6 @@ from sklearn.model_selection import train_test_split
 
 __all__ = ['HDE']
 
-def _inv(x, ret_sqrt=False):
-    '''Utility function that returns the inverse of a matrix, with the
-    option to return the square root of the inverse matrix.
-    Parameters
-    ----------
-    x: numpy array with shape [m,m]
-        matrix to be inverted
-        
-    ret_sqrt: bool, optional, default = False
-        if True, the square root of the inverse matrix is returned instead
-    Returns
-    -------
-    x_inv: numpy array with shape [m,m]
-        inverse of the original matrix
-    '''
-
-    # Calculate eigvalues and eigvectors
-    eigval_all, eigvec_all = tf.self_adjoint_eig(x)
-
-    # Filter out eigvalues below threshold and corresponding eigvectors
-    eig_th = tf.constant(K.epsilon(), dtype=tf.float32)
-    index_eig = tf.to_int32(eigval_all > eig_th)
-    _, eigval = tf.dynamic_partition(eigval_all, index_eig, 2)
-    _, eigvec = tf.dynamic_partition(tf.transpose(eigvec_all), index_eig, 2)
-
-    # Build the diagonal matrix with the filtered eigenvalues or square
-    # root of the filtered eigenvalues according to the parameter
-    eigval_inv = tf.diag(1/eigval)
-    eigval_inv_sqrt = tf.diag(tf.sqrt(1/eigval))
-    
-    cond_sqrt = tf.convert_to_tensor(ret_sqrt)
-    
-    diag = tf.cond(cond_sqrt, lambda: eigval_inv_sqrt, lambda: eigval_inv)
-
-    # Rebuild the square root of the inverse matrix
-    x_inv = tf.matmul(tf.transpose(eigvec), tf.matmul(diag, eigvec))
-
-    return x_inv
-
 
 def create_encoder(input_size, output_size, hidden_layer_depth, 
                    hidden_size, dropout_rate, noise_std, l2_reg, 
@@ -224,12 +185,6 @@ class HDE(BaseEstimator, TransformerMixin):
         C01 = 1/(N - 1)*K.dot(K.transpose(z_t0), z_tt)
         C10 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_t0)
         C11 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_tt)
-
-        """
-        vamp_matrix = K.dot(K.dot(_inv(C00, ret_sqrt=True), C01), _inv(C11, ret_sqrt=True))
-        vamp_score = tf.norm(vamp_matrix)
-        return -tf.square(vamp_score)
-        """
 
         C0 = 0.5*(C00 + C11)
         C1 = 0.5*(C01 + C10)
