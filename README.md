@@ -54,7 +54,7 @@ model = HDE(
     features.dimension(), 
     n_components=n_components, 
     n_epochs=20, 
-    lag_time=hde_lag,
+    lag_time=100,
     batch_normalization=True
 )
 
