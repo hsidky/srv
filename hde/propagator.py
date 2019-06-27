@@ -145,13 +145,14 @@ class Propagator(BaseEstimator, TransformerMixin):
 
     def __init__(self, input_dim, n_components=2, lag_time=100, batch_size=1000, 
                 learning_rate=0.001, n_epochs=100, hidden_layer_depth=2, 
-                hidden_size=100, activation='swish', verbose=True):
+                hidden_size=100, activation='swish', callbacks=None, verbose=True):
         self.input_dim = input_dim 
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.n_epochs = n_epochs
         self.verbose = verbose
         self.lag_time = lag_time
+        self.callbacks = callbacks
 
         model = keras.Sequential()
         get_custom_objects().update({'swish': swish})
@@ -172,7 +173,8 @@ class Propagator(BaseEstimator, TransformerMixin):
         x0, xt = self._create_dataset(X)
         
         self.model.fit(x0, xt, batch_size=self.batch_size, 
-                    epochs=self.n_epochs, verbose=self.verbose)
+                    epochs=self.n_epochs, verbose=self.verbose,
+                    callbacks=self.callbacks)
         
         self.is_fitted = True
         return self
