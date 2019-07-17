@@ -153,6 +153,7 @@ class Propagator(BaseEstimator, TransformerMixin):
         self.verbose = verbose
         self.lag_time = lag_time
         self.callbacks = callbacks
+        self.n_components = n_components
 
         model = keras.Sequential()
         get_custom_objects().update({'swish': swish})
@@ -167,6 +168,7 @@ class Propagator(BaseEstimator, TransformerMixin):
 
         self.model = model
         self.is_fitted = False
+        self.sess = K.get_session()
 
     
     def fit(self, X, y=None): 
@@ -209,3 +211,28 @@ class Propagator(BaseEstimator, TransformerMixin):
             raise TypeError('Data type {} is not supported'.format(type(data)))
 
         return [x_t0, x_tt]
+
+    def propagate(self, x0, n_steps=1):
+        mix_fun = get_mixture_fun(self.input_dim, self.n_components)
+        
+        def body(loop_counter, x, x_out):
+            y = self.model(x)
+            mixture = mix_fun(y)
+    
+            xn = mixture.sample()
+            xn = tf.clip_by_value(xn, 0, 1)
+            x_out = x_out.write(loop_counter, xn)
+        
+            return [loop_counter + 1, xn, x_out]
+    
+        def cond(loop_counter, x, x_out):
+            return tf.less(loop_counter, n_steps)
+        
+        with tf.variable_scope('propagate', reuse=tf.AUTO_REUSE):
+            x_out = tf.TensorArray(size=n_steps, dtype=tf.float32)
+            loop_counter = tf.constant(0)
+
+            result = tf.while_loop(cond, body, [loop_counter, xn, x_out])
+            traj = result[-1].stack()
+            coords = self.sess.run(traj)
+            return coords
