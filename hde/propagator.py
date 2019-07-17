@@ -232,7 +232,7 @@ class Propagator(BaseEstimator, TransformerMixin):
             x_out = tf.TensorArray(size=n_steps, dtype=tf.float32)
             loop_counter = tf.constant(0)
 
-            result = tf.while_loop(cond, body, [loop_counter, xn, x_out])
+            result = tf.while_loop(cond, body, [loop_counter, x0, x_out])
             traj = result[-1].stack()
             coords = self.sess.run(traj)
             return coords
