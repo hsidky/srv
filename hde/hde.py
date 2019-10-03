@@ -17,6 +17,47 @@ from sklearn.model_selection import train_test_split
 __all__ = ['HDE']
 
 
+def _inv(x, ret_sqrt=False):
+    '''Utility function that returns the inverse of a matrix, with the
+    option to return the square root of the inverse matrix.
+    Original from: https://github.com/markovmodel/deeptime
+    Parameters
+    ----------
+    x: numpy array with shape [m,m]
+        matrix to be inverted
+        
+    ret_sqrt: bool, optional, default = False
+        if True, the square root of the inverse matrix is returned instead
+    Returns
+    -------
+    x_inv: numpy array with shape [m,m]
+        inverse of the original matrix
+    '''
+
+    # Calculate eigvalues and eigvectors
+    eigval_all, eigvec_all = tf.self_adjoint_eig(x)
+
+    # Filter out eigvalues below threshold and corresponding eigvectors
+    eig_th = tf.constant(K.epsilon(), dtype=tf.float32)
+    index_eig = tf.to_int32(eigval_all > eig_th)
+    _, eigval = tf.dynamic_partition(eigval_all, index_eig, 2)
+    _, eigvec = tf.dynamic_partition(tf.transpose(eigvec_all), index_eig, 2)
+
+    # Build the diagonal matrix with the filtered eigenvalues or square
+    # root of the filtered eigenvalues according to the parameter
+    eigval_inv = tf.diag(1/eigval)
+    eigval_inv_sqrt = tf.diag(tf.sqrt(1/eigval))
+    
+    cond_sqrt = tf.convert_to_tensor(ret_sqrt)
+    
+    diag = tf.cond(cond_sqrt, lambda: eigval_inv_sqrt, lambda: eigval_inv)
+
+    # Rebuild the square root of the inverse matrix
+    x_inv = tf.matmul(tf.transpose(eigvec), tf.matmul(diag, eigvec))
+
+    return x_inv
+
+
 def create_encoder(input_size, output_size, hidden_layer_depth, 
                    hidden_size, dropout_rate, noise_std, l2_reg, 
                    batch_norm, activation):
@@ -72,7 +113,24 @@ def create_vac_encoder(encoder, input_size, n_components, means, eigenvectors, n
     vac_encoder = Model(inp, z_vac)
 
     return vac_encoder
-        
+
+
+def create_vamp_encoder(encoder, input_size, n_components, means, singular_values):
+    k_means = K.variable(means)
+    k_singular_vals = K.variable(singular_values)
+
+    def layer(x, n_components=n_components, means=k_means, singular_values=k_singular_vals):
+        x -= means 
+        z = K.dot(x, singular_values)
+        return z
+    
+    inp = layers.Input(shape=(input_size,))
+    z = encoder(inp)
+    z_vac = layers.Lambda(layer)(z)
+    vamp_encoder = Model(inp, z_vac)
+
+    return vamp_encoder
+
 
 class HDE(BaseEstimator, TransformerMixin):
     """ Heirarchical Dynamics Encoder (HDE)
@@ -128,8 +186,8 @@ class HDE(BaseEstimator, TransformerMixin):
     weights: :obj:`list` of :obj:`float`
         List of weights to apply to each slow mode during optimization.
     """
-    def __init__(self, input_size, n_components=2, lag_time=1, n_epochs=100, 
-                 learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
+    def __init__(self, input_size, n_components=2, lag_time=1, reversible=True, 
+                 n_epochs=100, learning_rate=0.001, dropout_rate=0, l2_regularization=0., 
                  hidden_layer_depth=2, hidden_size=100, activation='tanh', 
                  batch_size=100, validation_split=0, callbacks=None, 
                  batch_normalization=False, latent_space_noise=0, verbose=True):
@@ -154,12 +212,15 @@ class HDE(BaseEstimator, TransformerMixin):
         self.callbacks = callbacks
         self.batch_normalization = batch_normalization
         self.latent_space_noise = latent_space_noise
+        self.reversible = reversible
 
         self.weights = np.ones(self.n_components)
 
         # Cached variables 
         self.eigenvalues_ = None
         self.eigenvectors_ = None
+        self.left_singular_values_ = None
+        self.right_singular_values_ = None
         self.means_ = None 
         self._recompile = False
 
@@ -240,16 +301,21 @@ class HDE(BaseEstimator, TransformerMixin):
         C10 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_t0)
         C11 = 1/(N - 1)*K.dot(K.transpose(z_tt), z_tt)
 
-        C0 = 0.5*(C00 + C11)
-        C1 = 0.5*(C01 + C10)
-        
-        L = tf.cholesky(C0)
-        Linv = tf.matrix_inverse(L)
+        if not self.reversible:
+            vamp_matrix = K.dot(K.dot(_inv(C00, ret_sqrt=True), C01), _inv(C11, ret_sqrt=True))
+            vamp_score = tf.norm(vamp_matrix)
+            return -1.0 - tf.square(vamp_score)
+        else:
+            C0 = 0.5*(C00 + C11)
+            C1 = 0.5*(C01 + C10)
+            
+            L = tf.cholesky(C0)
+            Linv = tf.matrix_inverse(L)
 
-        A = K.dot(K.dot(Linv, C1), K.transpose(Linv))
+            A = K.dot(K.dot(Linv, C1), K.transpose(Linv))
 
-        lambdas, _ = tf.self_adjoint_eig(A)
-        return -1.0 - K.sum(self.weights*lambdas**2)
+            lambdas, _ = tf.self_adjoint_eig(A)
+            return -1.0 - K.sum(self.weights*lambdas**2)
 
 
     def _create_dataset(self, data, lag_time=None):
@@ -290,18 +356,33 @@ class HDE(BaseEstimator, TransformerMixin):
         C10 = 1/N*x_ttm.T.dot(x_t0m)
         C11 = 1/N*x_ttm.T.dot(x_ttm)
 
-        C0 = 0.5*(C00 + C11)
-        C1 = 0.5*(C01 + C10)
+        if not self.reversible:
+            C00inv = scipy.linalg.fractional_matrix_power(C00, -0.5)
+            C11inv = scipy.linalg.fractional_matrix_power(C11, -0.5)
 
-        eigvals, eigvecs = scipy.linalg.eigh(C1, b=C0)
-        idx = np.argsort(eigvals)[::-1]
+            P = C00inv.dot(C01).dot(C11inv)
+            Up, S, VpT = scipy.linalg.svd(P)
+    
+            U = C00inv.dot(Up)
+            V = C11inv.dot(VpT.T)
 
-        self.eigenvalues_ = eigvals[idx]
-        self.eigenvectors_ = eigvecs[:, idx]
+            idx = np.argsort(S)[::-1]
+            self.eigenvalues_ = S[idx]
+            self.left_singular_values_ = U[:, idx]
+            self.right_singular_values_ = V[:, idx]
+        else:
+            C0 = 0.5*(C00 + C11)
+            C1 = 0.5*(C01 + C10)
 
-        z = (x - self.means_).dot(self.eigenvectors_)
+            eigvals, eigvecs = scipy.linalg.eigh(C1, b=C0)
+            idx = np.argsort(eigvals)[::-1]
 
-        self.norms_ = np.sqrt(np.mean(z*z, axis=0))
+            self.eigenvalues_ = eigvals[idx]
+            self.eigenvectors_ = eigvecs[:, idx]
+
+            z = (x - self.means_).dot(self.eigenvectors_)
+
+            self.norms_ = np.sqrt(np.mean(z*z, axis=0))
 
 
     def score(self, X, lag_time=None, score_k=None):
@@ -326,10 +407,11 @@ class HDE(BaseEstimator, TransformerMixin):
             
         if y is not None:
             train_x0, train_xt = all_data
-            validation_data = self._create_dataset(y)
+            #validation_data = self._create_dataset(y)
         else:
-            train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
-            validation_data = [val_x0, val_xt]
+            train_x0, train_xt = all_data
+            #train_x0, val_x0, train_xt, val_xt = train_test_split(all_data[0], all_data[1], test_size=self.validation_split)
+            #validation_data = [val_x0, val_xt]
         
         if not self.is_fitted or self._recompile:
             self.hde.compile(optimizer=self.optimizer, loss=self._loss)
@@ -338,7 +420,7 @@ class HDE(BaseEstimator, TransformerMixin):
         self.history = self.hde.fit(
             [train_x0, train_xt], 
             train_x0, 
-            validation_data=[validation_data, validation_data[0]],
+            #validation_data=[validation_data, validation_data[0]],
             callbacks=self.callbacks,
             batch_size=self.batch_size, 
             epochs=self.n_epochs, 
@@ -356,28 +438,55 @@ class HDE(BaseEstimator, TransformerMixin):
         out_t0, out_tt = self._create_dataset(out)
         self._calculate_basis(out_t0, out_tt)
 
-        self.encoder = create_vac_encoder(
-            self._encoder,
-            self.input_size,
-            self.n_components,
-            self.means_,
-            self.eigenvectors_,
-            self.norms_
-        )
+        if self.reversible:
+            self.encoder = create_vac_encoder(
+                self._encoder,
+                self.input_size,
+                self.n_components,
+                self.means_,
+                self.eigenvectors_,
+                self.norms_
+            )
+        else:
+            self.encoder = create_vamp_encoder(
+                self._encoder,
+                self.input_size,
+                self.n_components,
+                self.means_,
+                self.left_singular_values_
+            )
+            
+            self.right_encoder = create_vamp_encoder(
+                self._encoder,
+                self.input_size,
+                self.n_components,
+                self.means_,
+                self.right_singular_values_
+            )
 
         self.is_fitted = True
         return self
 
 
-    def transform(self, X):
+    def transform(self, X, side='left'):
 
         if self.is_fitted:
-            out = self.encoder.predict(X, batch_size=self.batch_size)
-            return out
-        
+            if self.reversible:
+                out = self.encoder.predict(X, batch_size=self.batch_size)
+                return out
+            else:
+                if side == 'left':
+                    out = self.encoder.predict(X, batch_size=self.batch_size)
+                elif side == 'right':
+                    out = self.right_encoder.predict(X, batch_size=self.batch_size)
+                else:
+                    raise ValueError('Side must either be "left" or "right".')
+                
+                return out
+
         raise RuntimeError('Model needs to be fit first.')
 
 
-    def fit_transform(self, X, y=None):
+    def fit_transform(self, X, y=None, side='left'):
         self.fit(X, y)
-        return self.transform(X)
+        return self.transform(X, side)
