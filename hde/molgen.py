@@ -4,7 +4,7 @@ import numpy as np
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from keras.layers.merge import _Merge
-from keras.layers import Input, Dense, Reshape, Flatten, Dropout
+from keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate
 from keras.layers import BatchNormalization, Activation, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
@@ -38,7 +38,7 @@ class RandomWeightedAverage(_Merge):
 
 class MolGen(BaseEstimator, TransformerMixin):
 
-    def __init__(self, latent_dim, output_dim, batch_size=1000, noise_variance=0.1,
+    def __init__(self, latent_dim, output_dim, batch_size=1000, noise_dim=50,
                 n_epochs=1000,
                 hidden_layer_depth=3, hidden_size=200, activation='swish', verbose=True,
                 n_discriminator=5):
@@ -49,7 +49,7 @@ class MolGen(BaseEstimator, TransformerMixin):
         self.activation = activation
         self.batch_size=batch_size
         self.n_epochs = n_epochs
-        self.noise_variance = noise_variance
+        self.noise_dim = noise_dim
         self.verbose = verbose
 
         self.n_discriminator = n_discriminator
@@ -71,15 +71,22 @@ class MolGen(BaseEstimator, TransformerMixin):
         real_mol = Input(shape=(self.output_dim,))
 
         # Discriminator input 
-        z_disc = Input(shape=(self.latent_dim,))
+        z_disc = Input(shape=(self.latent_dim + self.noise_dim,))
         fake_mol = self.generator(z_disc)
 
+        # conditioning input 
+        z_cond = Input(shape=(self.latent_dim,))
+        # Condition both fake and valid. 
+        fake_mol_cond = Concatenate(axis=1)([fake_mol, z_cond])
+        real_mol_cond = Concatenate(axis=1)([real_mol, z_cond])
+
         # Discriminator does its job 
-        fake = self.discriminator(fake_mol)
-        valid = self.discriminator(real_mol)
+        fake = self.discriminator(fake_mol_cond)
+        valid = self.discriminator(real_mol_cond)
+
 
         # Interpolated between real and fake molecule.
-        interp_mol = RandomWeightedAverage(batch_size=self.batch_size)([real_mol, fake_mol])
+        interp_mol = RandomWeightedAverage(batch_size=self.batch_size)([real_mol_cond, fake_mol_cond])
         validity_interp = self.discriminator(interp_mol)
 
         # Use Python partial to provide loss function with additional
@@ -88,7 +95,7 @@ class MolGen(BaseEstimator, TransformerMixin):
                           averaged_samples=interp_mol)
         partial_gp_loss.__name__ = 'gradient_penalty' # Keras requires function names
 
-        self.discriminator_model = Model(inputs=[real_mol, z_disc],
+        self.discriminator_model = Model(inputs=[real_mol, z_disc, z_cond],
                             outputs=[valid, fake, validity_interp])
         self.discriminator_model.compile(loss=[self._wasserstein_loss,
                                         self._wasserstein_loss,
@@ -102,10 +109,12 @@ class MolGen(BaseEstimator, TransformerMixin):
         self.discriminator.trainable = False
         self.generator.trainable = True
 
-        z_gen = Input(shape=(self.latent_dim,))
+        z_gen = Input(shape=(self.latent_dim + self.noise_dim,))
         mol = self.generator(z_gen)
-        valid = self.discriminator(mol)
-        self.generator_model = Model(z_gen, valid)
+        z_cond = Input(shape=(self.latent_dim,))
+        mol_cond = Concatenate(axis=1)([mol, z_cond])
+        valid = self.discriminator(mol_cond)
+        self.generator_model = Model([z_gen, z_cond], valid)
         self.generator_model.compile(loss=self._wasserstein_loss, optimizer=optimizer)
 
         self.is_fitted = False
@@ -127,18 +136,17 @@ class MolGen(BaseEstimator, TransformerMixin):
                 real_mols = y[idx]
 
                 # Sample generator input
-                fake_mols = X[idx]
-                fake_mols += np.random.normal(0, self.noise_variance, fake_mols.shape)
+                fake_mols = np.concatenate([X[idx], np.random.normal(0, 1, (self.batch_size, self.noise_dim))], axis=1)
                 
                 # Train the critic
-                d_loss = self.discriminator_model.train_on_batch([real_mols, fake_mols],
+                d_loss = self.discriminator_model.train_on_batch([real_mols, fake_mols, X[idx]],
                                                             [valid, fake, dummy])
 
             # ---------------------
             #  Train Generator
             # ---------------------
 
-            g_loss = self.generator_model.train_on_batch(fake_mols, valid)
+            g_loss = self.generator_model.train_on_batch([fake_mols, X[idx]], valid)
 
             # Plot the progress
             if self.verbose:
@@ -151,7 +159,7 @@ class MolGen(BaseEstimator, TransformerMixin):
     def transform(self, X):
 
         if self.is_fitted:
-            out = self.generator.predict(X + np.random.normal(0, self.noise_variance, X.shape), batch_size=self.batch_size)
+            out = self.generator.predict(np.concatenate([X, np.random.normal(0, 1, (X.shape[0], self.noise_dim))], axis=1), batch_size=self.batch_size)
             return out
         
         raise RuntimeError('Model needs to be fit first.')
@@ -186,17 +194,17 @@ class MolGen(BaseEstimator, TransformerMixin):
             Dense(
                 self.hidden_size, 
                 activation=self.activation, 
-                input_dim=self.latent_dim
+                input_dim=self.latent_dim + self.noise_dim
             )
         )
         for _ in range(self.hidden_layer_depth - 1):
             model.add(Dense(self.hidden_size, activation=self.activation))
 
-        model.add(Dense(self.output_dim, activation='linear'))
+        model.add(Dense(self.output_dim, activation='tanh'))
 
         model.summary()
 
-        input = Input(shape=(self.latent_dim,))
+        input = Input(shape=(self.latent_dim + self.noise_dim,))
         mol = model(input)
 
         return Model(input, mol)
@@ -208,7 +216,7 @@ class MolGen(BaseEstimator, TransformerMixin):
             Dense(
                 self.hidden_size, 
                 activation=self.activation, 
-                input_dim=self.output_dim
+                input_dim=self.output_dim + self.latent_dim
             )
         )
         for _ in range(self.hidden_layer_depth - 1):
@@ -218,7 +226,7 @@ class MolGen(BaseEstimator, TransformerMixin):
 
         model.summary()
 
-        mol = Input(shape=(self.output_dim,))
+        mol = Input(shape=(self.output_dim + self.latent_dim,))
         validity = model(mol)
 
         return Model(mol, validity)
